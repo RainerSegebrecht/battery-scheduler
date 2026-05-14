@@ -1,5 +1,15 @@
 # battery-scheduler
 
+## git
+```
+git init
+git branch -M main
+git add .
+git commit -m "Initialer Commit"
+git remote add origin git@github.com:RainerSegebrecht/battery-scheduler.git
+git push -u origin main
+```
+
 Externe Steuerungssoftware für Hausbatteriespeicher in Kombination mit [evcc](https://evcc.io/), Tibber-Stromtarif und Solcast-Solarprognose.
 
 ## Hintergrund
