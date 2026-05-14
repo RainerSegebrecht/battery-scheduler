@@ -1,0 +1,51 @@
+# battery-scheduler configuration
+# Copy this file to ./config/config.yaml and fill in your values.
+
+# evcc connection
+evcc:
+  url: "http://evcc:7070"       # URL of your evcc instance (use service name in Docker)
+  poll_interval: "45s"          # Must be < 60s! evcc auto-resets batterymode after 60s.
+
+# Tibber API credentials
+# Get your token at: https://developer.tibber.com/
+tibber:
+  token: "YOUR_TIBBER_TOKEN_HERE"
+
+# Solcast API credentials
+# Sign up at: https://solcast.com/ (free tier available for residential)
+solcast:
+  site_id: "YOUR_SOLCAST_SITE_ID"     # found in the Solcast portal under "Your Sites"
+  api_key: "YOUR_SOLCAST_API_KEY"
+  # Times (local timezone) when the forecast is re-fetched and the plan is rebuilt.
+  # Solcast free tier allows 10 API calls/day.
+  fetch_times:
+    - "06:00"
+    - "14:00"
+
+# Battery configuration
+battery:
+  capacity_kwh: 10.0            # Usable battery capacity in kWh (Huawei Luna2000 10kWh)
+  max_charge_power_kw: 5.0      # Maximum grid charge power in kW (sun2000-5ktl = 5kW)
+
+  # If the Solcast P10 forecast for the target day exceeds this value, no grid
+  # charging is scheduled (solar will fill the battery on its own).
+  solar_threshold_kwh: 8.0      # kWh — adjust seasonally or leave as-is
+
+  target_soc: 100               # % — desired battery SOC at target_time
+  target_time: "20:00"          # HH:MM local time — "battery must be full by this time"
+
+  # When the current Tibber price exceeds this value AND we are NOT in a cheap
+  # charging slot, the battery mode is set to "hold" to preserve stored energy
+  # for expensive hours (e.g. sauna in the evening).
+  hold_above_price: 0.25        # EUR/kWh
+
+  # Battery will never be commanded to discharge below this SOC.
+  min_soc: 10                   # %
+
+# Database — SQLite file location (use a volume-mounted path in Docker)
+database:
+  path: "/data/battery-scheduler.db"
+
+# Logging level: debug | info | warn | error
+log:
+  level: "info"
