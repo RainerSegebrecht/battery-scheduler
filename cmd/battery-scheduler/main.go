@@ -16,7 +16,6 @@ import (
 	"github.com/home/battery-scheduler/internal/scheduler"
 	"github.com/home/battery-scheduler/internal/solcast"
 	"github.com/home/battery-scheduler/internal/status"
-	"github.com/home/battery-scheduler/internal/tibber"
 )
 
 func main() {
@@ -95,10 +94,9 @@ func main() {
 	)
 	log.Info("database opened", "path", cfg.Database.Path)
 
-	tibberClient := tibber.New(cfg.Tibber.Token)
 	solcastClient := solcast.New(cfg.Solcast.SiteID, cfg.Solcast.APIKey)
 
-	sched := scheduler.New(cfg, database, evccClient, tibberClient, solcastClient, log)
+	sched := scheduler.New(cfg, database, evccClient, solcastClient, log)
 	sched.DryRun = effectiveDryRun
 
 	// --- Start HTTP status server ---

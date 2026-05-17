@@ -6,11 +6,6 @@ evcc:
   url: "http://evcc:7070"       # URL of your evcc instance (use service name in Docker)
   poll_interval: "45s"          # Must be < 60s! evcc auto-resets batterymode after 60s.
 
-# Tibber API credentials
-# Get your token at: https://developer.tibber.com/
-tibber:
-  token: "YOUR_TIBBER_TOKEN_HERE"
-
 # Solcast API credentials
 # Sign up at: https://solcast.com/ (free tier available for residential)
 solcast:
@@ -34,7 +29,7 @@ battery:
   target_soc: 100               # % — desired battery SOC at target_time
   target_time: "20:00"          # HH:MM local time — "battery must be full by this time"
 
-  # When the current Tibber price exceeds this value AND we are NOT in a cheap
+  # When the current grid price exceeds this value AND we are NOT in a cheap
   # charging slot, the battery mode is set to "hold" to preserve stored energy
   # for expensive hours (e.g. sauna in the evening).
   hold_above_price: 0.25        # EUR/kWh

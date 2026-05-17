@@ -127,35 +127,36 @@ func (c *Client) SetBatteryMode(mode BatteryMode) error {
 	return nil
 }
 
-// TariffSlot represents a single price slot from the Tibber tariff.
+// TariffSlot represents a single hourly price slot derived from the evcc tariff API.
+// evcc delivers 15-minute intervals; HourlyTariff() aggregates them to full hours
+// by averaging the four 15-minute values within each hour.
 type TariffSlot struct {
-	Start time.Time
-	End   time.Time
-	Price float64 // EUR/kWh
+	StartsAt time.Time
+	Total    float64 // average EUR/kWh for that hour
 }
 
 // tariffResponse wraps /api/tariff/{type}
 type tariffResponse struct {
-	Result struct {
-		Rates []struct {
-			Start string  `json:"start"`
-			End   string  `json:"end"`
-			Price float64 `json:"price"`
-		} `json:"rates"`
-	} `json:"result"`
+	Rates []struct {
+		Start string  `json:"start"`
+		End   string  `json:"end"`
+		Value float64 `json:"value"`
+	} `json:"rates"`
 }
 
-// Tariff fetches the price forecast from evcc (which proxies Tibber).
-// tariffType is typically "grid".
-func (c *Client) Tariff(tariffType string) ([]TariffSlot, error) {
-	resp, err := c.httpClient.Get(fmt.Sprintf("%s/api/tariff/%s", c.baseURL, tariffType))
+// HourlyTariff fetches the grid price forecast from evcc and returns it as
+// one-hour slots. evcc serves 15-minute intervals; this method averages the
+// four quarter-hour values within each clock hour into a single entry so the
+// result has the same shape as the former Tibber integration.
+func (c *Client) HourlyTariff() ([]TariffSlot, error) {
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/api/tariff/grid", c.baseURL))
 	if err != nil {
 		return nil, fmt.Errorf("fetching tariff: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tariff returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("evcc tariff returned HTTP %d", resp.StatusCode)
 	}
 
 	var envelope tariffResponse
@@ -163,17 +164,34 @@ func (c *Client) Tariff(tariffType string) ([]TariffSlot, error) {
 		return nil, fmt.Errorf("decoding tariff: %w", err)
 	}
 
-	slots := make([]TariffSlot, 0, len(envelope.Result.Rates))
-	for _, r := range envelope.Result.Rates {
-		start, err := time.Parse(time.RFC3339, r.Start)
+	// Aggregate 15-min slots → 1-hour slots (average price per hour)
+	type accumulator struct {
+		sum   float64
+		count int
+	}
+	byHour := make(map[time.Time]*accumulator)
+	var hourOrder []time.Time
+
+	for _, r := range envelope.Rates {
+		t, err := time.Parse(time.RFC3339, r.Start)
 		if err != nil {
 			continue
 		}
-		end, err := time.Parse(time.RFC3339, r.End)
-		if err != nil {
-			continue
+		// Truncate to the start of the clock hour
+		h := t.Truncate(time.Hour)
+		if _, exists := byHour[h]; !exists {
+			byHour[h] = &accumulator{}
+			hourOrder = append(hourOrder, h)
 		}
-		slots = append(slots, TariffSlot{Start: start, End: end, Price: r.Price})
+		byHour[h].sum += r.Value
+		byHour[h].count++
+	}
+
+	slots := make([]TariffSlot, 0, len(hourOrder))
+	for _, h := range hourOrder {
+		acc := byHour[h]
+		avg := acc.sum / float64(acc.count)
+		slots = append(slots, TariffSlot{StartsAt: h, Total: avg})
 	}
 	return slots, nil
 }

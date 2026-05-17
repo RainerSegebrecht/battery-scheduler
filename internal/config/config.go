@@ -25,7 +25,6 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 // Config is the top-level configuration structure.
 type Config struct {
 	Evcc     EvccConfig     `yaml:"evcc"`
-	Tibber   TibberConfig   `yaml:"tibber"`
 	Solcast  SolcastConfig  `yaml:"solcast"`
 	Battery  BatteryConfig  `yaml:"battery"`
 	Database DatabaseConfig `yaml:"database"`
@@ -36,10 +35,6 @@ type Config struct {
 type EvccConfig struct {
 	URL          string   `yaml:"url"`           // e.g. http://evcc:7070
 	PollInterval Duration `yaml:"poll_interval"` // how often to run the control loop, must be < 60s
-}
-
-type TibberConfig struct {
-	Token string `yaml:"token"`
 }
 
 type SolcastConfig struct {
@@ -103,9 +98,6 @@ func (c *Config) validate() error {
 	}
 	if c.Evcc.PollInterval.Duration >= 60*time.Second {
 		return fmt.Errorf("evcc.poll_interval must be < 60s (evcc auto-resets batterymode after 60s)")
-	}
-	if c.Tibber.Token == "" {
-		return fmt.Errorf("tibber.token is required")
 	}
 	if c.Solcast.SiteID == "" || c.Solcast.APIKey == "" {
 		return fmt.Errorf("solcast.site_id and solcast.api_key are required")

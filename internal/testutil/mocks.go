@@ -1,4 +1,4 @@
-// Package testutil provides mock HTTP servers for evcc, Tibber and Solcast.
+// Package testutil provides mock HTTP servers for evcc and Solcast.
 // Each mock server is a real net/http/httptest.Server so the production client
 // code runs unchanged — only the base-URL is pointed at localhost.
 package testutil
@@ -18,13 +18,29 @@ import (
 // MockEvcc
 // ──────────────────────────────────────────────────────────────────────────────
 
-// MockEvcc is an in-process HTTP server that mimics the evcc REST API.
+// PriceScenario describes the hourly price pattern served by the mock tariff endpoint.
+type PriceScenario string
+
+const (
+	// ScenarioCheapNight: 00–06 very cheap, rest expensive
+	ScenarioCheapNight PriceScenario = "cheap_night"
+	// ScenarioCheapMidday: 10–14 cheap (wind/sun), rest normal
+	ScenarioCheapMidday PriceScenario = "cheap_midday"
+	// ScenarioUniform: flat price all day
+	ScenarioUniform PriceScenario = "uniform"
+	// ScenarioExpensiveAll: high prices all day (no good slot)
+	ScenarioExpensiveAll PriceScenario = "expensive_all"
+)
+
+// MockEvcc is an in-process HTTP server that mimics the evcc REST API,
+// including /api/state, /api/batterymode/{mode} and /api/tariff/grid.
 type MockEvcc struct {
 	Server *httptest.Server
 
-	mu          sync.Mutex
-	state       evccState
-	modeHistory []string // ordered list of batterymode commands received
+	mu            sync.Mutex
+	state         evccState
+	priceScenario PriceScenario
+	modeHistory   []string // ordered list of batterymode commands received
 }
 
 type evccState struct {
@@ -43,6 +59,7 @@ type evccState struct {
 func NewMockEvcc(
 	batterySoC float64,
 	tariffGrid float64,
+	priceScenario PriceScenario,
 ) *MockEvcc {
 	m := &MockEvcc{
 		state: evccState{
@@ -53,11 +70,13 @@ func NewMockEvcc(
 			PvPower:     0,
 			TariffGrid:  tariffGrid,
 		},
+		priceScenario: priceScenario,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", m.handleState)
 	mux.HandleFunc("/api/batterymode/", m.handleBatteryMode)
+	mux.HandleFunc("/api/tariff/grid", m.handleTariff)
 
 	m.Server = httptest.NewServer(mux)
 	return m
@@ -124,7 +143,6 @@ func (m *MockEvcc) handleState(w http.ResponseWriter, r *http.Request) {
 		"homePower":  s.HomePower,
 		"pvPower":    s.PvPower,
 		"tariffGrid": s.TariffGrid,
-		// loadpoints: empty by default — no vehicle charging in tests unless explicitly set
 		"loadpoints": func() []any {
 			if s.VehicleCharging {
 				return []any{map[string]any{"charging": true}}
@@ -139,7 +157,6 @@ func (m *MockEvcc) handleBatteryMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// path: /api/batterymode/{mode}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/batterymode/"), "/")
 	mode := parts[0]
 
@@ -153,103 +170,53 @@ func (m *MockEvcc) handleBatteryMode(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"result": mode})
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// MockTibber
-// ──────────────────────────────────────────────────────────────────────────────
+// handleTariff serves /api/tariff/grid with 15-minute slots for 48 hours,
+// using the configured PriceScenario.
+func (m *MockEvcc) handleTariff(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+	scenario := m.priceScenario
+	m.mu.Unlock()
 
-// PriceScenario describes the price pattern served by MockTibber.
-type PriceScenario string
+	today := time.Date(
+		time.Now().Year(), time.Now().Month(), time.Now().Day(),
+		0, 0, 0, 0, time.Now().Location(),
+	)
 
-const (
-	// ScenarioCheapNight: 00–06 very cheap, rest expensive
-	ScenarioCheapNight PriceScenario = "cheap_night"
-	// ScenarioCheapMidday: 10–14 cheap (wind/sun), rest normal
-	ScenarioCheapMidday PriceScenario = "cheap_midday"
-	// ScenarioUniform: flat price all day
-	ScenarioUniform PriceScenario = "uniform"
-	// ScenarioExpensiveAll: high prices all day (no good slot)
-	ScenarioExpensiveAll PriceScenario = "expensive_all"
-)
-
-// MockTibber is an in-process HTTP server that mimics the Tibber GraphQL API.
-type MockTibber struct {
-	Server   *httptest.Server
-	Scenario PriceScenario
-	// BasePrice is used for ScenarioUniform (EUR/kWh)
-	BasePrice float64
-}
-
-// NewMockTibber creates and starts a mock Tibber server.
-func NewMockTibber(scenario PriceScenario) *MockTibber {
-	m := &MockTibber{Scenario: scenario, BasePrice: 0.28}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1-beta/gql", m.handleGQL)
-	m.Server = httptest.NewServer(mux)
-	return m
-}
-
-// URL returns the full GraphQL endpoint URL for use with tibber.NewWithURL.
-func (m *MockTibber) URL() string { return m.Server.URL + "/v1-beta/gql" }
-
-// Close shuts down the mock server.
-func (m *MockTibber) Close() { m.Server.Close() }
-
-func (m *MockTibber) handleGQL(w http.ResponseWriter, r *http.Request) {
-	prices := m.buildPrices()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"data": map[string]any{
-			"viewer": map[string]any{
-				"homes": []any{
-					map[string]any{
-						"currentSubscription": map[string]any{
-							"priceInfo": map[string]any{
-								"today":    prices[:24],
-								"tomorrow": prices[24:],
-							},
-						},
-					},
-				},
-			},
-		},
-	})
-}
-
-func (m *MockTibber) buildPrices() []map[string]any {
-	now := time.Now().Truncate(time.Hour)
-	// Start of today 00:00
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-
-	prices := make([]map[string]any, 48)
-	for i := 0; i < 48; i++ {
-		t := today.Add(time.Duration(i) * time.Hour)
-		h := t.Hour()
-		price := m.priceForHour(h)
-		level := priceLevel(price)
-		prices[i] = map[string]any{
-			"total":    price,
-			"energy":   price * 0.7,
-			"tax":      price * 0.3,
-			"startsAt": t.Format(time.RFC3339),
-			"level":    level,
-		}
+	// 48h × 4 quarter-hours = 192 slots
+	type rate struct {
+		Start string  `json:"start"`
+		End   string  `json:"end"`
+		Value float64 `json:"value"`
 	}
-	return prices
+	rates := make([]rate, 0, 192)
+	for i := 0; i < 192; i++ {
+		slotStart := today.Add(time.Duration(i) * 15 * time.Minute)
+		slotEnd := slotStart.Add(15 * time.Minute)
+		h := slotStart.Hour()
+		rates = append(rates, rate{
+			Start: slotStart.Format(time.RFC3339),
+			End:   slotEnd.Format(time.RFC3339),
+			Value: priceForHour(scenario, h),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"rates": rates})
 }
 
-func (m *MockTibber) priceForHour(h int) float64 {
-	switch m.Scenario {
+func priceForHour(scenario PriceScenario, h int) float64 {
+	switch scenario {
 	case ScenarioCheapNight:
 		if h >= 0 && h < 6 {
-			return 0.12 // very cheap at night
+			return 0.12
 		}
 		if h >= 17 && h < 21 {
-			return 0.38 // expensive evening (sauna time)
+			return 0.38
 		}
 		return 0.26
 	case ScenarioCheapMidday:
 		if h >= 10 && h < 14 {
-			return 0.14 // cheap midday (solar/wind surplus)
+			return 0.14
 		}
 		if h >= 17 && h < 21 {
 			return 0.36
@@ -258,22 +225,7 @@ func (m *MockTibber) priceForHour(h int) float64 {
 	case ScenarioExpensiveAll:
 		return 0.40
 	default: // ScenarioUniform
-		return m.BasePrice
-	}
-}
-
-func priceLevel(p float64) string {
-	switch {
-	case p < 0.15:
-		return "VERY_CHEAP"
-	case p < 0.22:
-		return "CHEAP"
-	case p < 0.30:
-		return "NORMAL"
-	case p < 0.36:
-		return "EXPENSIVE"
-	default:
-		return "VERY_EXPENSIVE"
+		return 0.28
 	}
 }
 
@@ -322,7 +274,6 @@ func (m *MockSolcast) handleForecast(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *MockSolcast) buildForecasts() []map[string]any {
-	// Build 48h of 30-min periods from now
 	start := time.Now().Truncate(30 * time.Minute)
 	periods := make([]map[string]any, 96)
 	for i := 0; i < 96; i++ {
@@ -340,32 +291,29 @@ func (m *MockSolcast) buildForecasts() []map[string]any {
 	return periods
 }
 
-// pvForHour returns (P50, P10, P90) kW for a given hour depending on scenario.
 func (m *MockSolcast) pvForHour(h int) (float64, float64, float64) {
-	// No solar at night
 	if h < 6 || h >= 20 {
 		return 0, 0, 0
 	}
 	peak := m.peakKW()
-	// Simple bell-curve: peak at noon (h=12), zero at 6 and 20
 	dist := 1.0 - float64(abs(h-13))/7.0
 	if dist < 0 {
 		dist = 0
 	}
 	p50 := peak * dist
-	p10 := p50 * 0.7  // pessimistic 70%
-	p90 := p50 * 1.15 // optimistic 115%
+	p10 := p50 * 0.7
+	p90 := p50 * 1.15
 	return p50, p10, p90
 }
 
 func (m *MockSolcast) peakKW() float64 {
 	switch m.Scenario {
 	case ScenarioWinter:
-		return 0.6 // very low winter irradiation → ~1.5 kWh P10 per day
+		return 0.6
 	case ScenarioOvercast:
-		return 2.0 // ~5 kWh P10
+		return 2.0
 	default: // ScenarioSummer
-		return 5.5 // ~14 kWh P10 (5.8 kWp * typical summer factor)
+		return 5.5
 	}
 }
 

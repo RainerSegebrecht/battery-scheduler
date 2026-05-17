@@ -11,7 +11,6 @@ import (
 	"github.com/home/battery-scheduler/internal/db"
 	"github.com/home/battery-scheduler/internal/evcc"
 	"github.com/home/battery-scheduler/internal/solcast"
-	"github.com/home/battery-scheduler/internal/tibber"
 )
 
 // Scheduler orchestrates the battery charging logic.
@@ -19,7 +18,6 @@ type Scheduler struct {
 	cfg     *config.Config
 	db      *db.DB
 	evcc    *evcc.Client
-	tibber  *tibber.Client
 	solcast *solcast.Client
 	log     *slog.Logger
 
@@ -33,7 +31,6 @@ func New(
 	cfg *config.Config,
 	database *db.DB,
 	evccClient *evcc.Client,
-	tibberClient *tibber.Client,
 	solcastClient *solcast.Client,
 	log *slog.Logger,
 ) *Scheduler {
@@ -41,7 +38,6 @@ func New(
 		cfg:     cfg,
 		db:      database,
 		evcc:    evccClient,
-		tibber:  tibberClient,
 		solcast: solcastClient,
 		log:     log,
 	}
@@ -98,11 +94,11 @@ func (s *Scheduler) Plan() error {
 		return s.db.UpsertChargingSlots(nil) // clear future slots
 	}
 
-	// --- 4. Fetch Tibber prices ---
-	s.log.Info("fetching Tibber prices")
-	priceSlots, err := s.tibber.Prices()
+	// --- 4. Fetch prices from evcc tariff API ---
+	s.log.Info("fetching prices from evcc tariff")
+	priceSlots, err := s.evcc.HourlyTariff()
 	if err != nil {
-		return fmt.Errorf("tibber prices: %w", err)
+		return fmt.Errorf("evcc tariff: %w", err)
 	}
 
 	// --- 5. Calculate how many hours of charging we need ---
@@ -276,12 +272,12 @@ func (s *Scheduler) neededChargeKWh(currentSOC float64) float64 {
 	return (targetSOC - currentSOC) / 100.0 * s.cfg.Battery.CapacityKWh
 }
 
-// selectCheapestSlots returns the cheapest n full-hour slots from Tibber prices
+// selectCheapestSlots returns the cheapest n full-hour slots from evcc tariff prices
 // that fall before the given target time.
-func (s *Scheduler) selectCheapestSlots(prices []tibber.PriceSlot, before time.Time, n int) []db.ChargingSlot {
+func (s *Scheduler) selectCheapestSlots(prices []evcc.TariffSlot, before time.Time, n int) []db.ChargingSlot {
 	// Filter to future slots before target time
 	now := time.Now()
-	var candidates []tibber.PriceSlot
+	var candidates []evcc.TariffSlot
 	for _, p := range prices {
 		end := p.StartsAt.Add(time.Hour)
 		if p.StartsAt.After(now) && end.Before(before) || end.Equal(before) {

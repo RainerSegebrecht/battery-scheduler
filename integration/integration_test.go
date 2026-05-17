@@ -1,6 +1,6 @@
 // Package integration contains end-to-end tests for battery-scheduler.
 //
-// Each test wires up three real HTTP mock servers (evcc, Tibber, Solcast),
+// Each test wires up two real HTTP mock servers (evcc, Solcast),
 // constructs a Scheduler with real production code, runs Plan() and/or
 // Control() and then asserts the batterymode commands sent to evcc.
 //
@@ -25,7 +25,6 @@ import (
 	"github.com/home/battery-scheduler/internal/scheduler"
 	"github.com/home/battery-scheduler/internal/solcast"
 	"github.com/home/battery-scheduler/internal/testutil"
-	"github.com/home/battery-scheduler/internal/tibber"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -35,7 +34,6 @@ import (
 // testHarness holds all pieces of a wired-up test environment.
 type testHarness struct {
 	evccMock    *testutil.MockEvcc
-	tibberMock  *testutil.MockTibber
 	solcastMock *testutil.MockSolcast
 	sched       *scheduler.Scheduler
 	database    *db.DB
@@ -44,8 +42,8 @@ type testHarness struct {
 
 // newHarness builds a full test environment.
 // batterySoC:           initial battery state of charge (%)
-// tariffGrid:           current Tibber price returned by evcc state (EUR/kWh)
-// priceScene:           the Tibber price pattern to use
+// tariffGrid:           current price returned by evcc state (EUR/kWh)
+// priceScene:           the price pattern served by the evcc tariff endpoint
 // solarScene:           the Solcast PV forecast to use
 // targetTime:           "HH:MM" — battery must be full by this time
 // holdPrice:            EUR/kWh above which the battery is held
@@ -63,13 +61,11 @@ func newHarness(
 	t.Helper()
 
 	// Start mock servers
-	mockEvcc := testutil.NewMockEvcc(batterySoC, tariffGrid)
-	mockTibber := testutil.NewMockTibber(priceScene)
+	mockEvcc := testutil.NewMockEvcc(batterySoC, tariffGrid, priceScene)
 	mockSolcast := testutil.NewMockSolcast("test-site-id", solarScene)
 
 	t.Cleanup(func() {
 		mockEvcc.Close()
-		mockTibber.Close()
 		mockSolcast.Close()
 	})
 
@@ -78,9 +74,6 @@ func newHarness(
 		Evcc: config.EvccConfig{
 			URL:          mockEvcc.URL(),
 			PollInterval: config.Duration{Duration: 45 * time.Second},
-		},
-		Tibber: config.TibberConfig{
-			Token: "mock-token",
 		},
 		Solcast: config.SolcastConfig{
 			SiteID:     "test-site-id",
@@ -112,16 +105,14 @@ func newHarness(
 
 	// Build clients pointing at mock servers
 	evccClient := evcc.New(mockEvcc.URL())
-	tibberClient := tibber.NewWithURL("mock-token", mockTibber.URL())
 	solcastClient := solcast.NewWithURL("test-site-id", "mock-api-key", mockSolcast.URL())
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	sched := scheduler.New(cfg, database, evccClient, tibberClient, solcastClient, log)
+	sched := scheduler.New(cfg, database, evccClient, solcastClient, log)
 
 	return &testHarness{
 		evccMock:    mockEvcc,
-		tibberMock:  mockTibber,
 		solcastMock: mockSolcast,
 		sched:       sched,
 		database:    database,
@@ -135,7 +126,7 @@ func newHarness(
 
 // TestScenario_Winter_CheapNight tests the primary use case:
 // - It is winter, solar forecast is low (~1.5 kWh P10)
-// - Tibber has cheap slots at night (00:00–06:00)
+// - Cheap slots at night (00:00–06:00)
 // - Battery is at 20% SoC
 // - Target: 100% by 20:00
 //
@@ -147,7 +138,7 @@ func TestScenario_Winter_CheapNight(t *testing.T) {
 	h := newHarness(t,
 		20,                          // batterySoC
 		0.38,                        // current tariffGrid (expensive now)
-		testutil.ScenarioCheapNight, // Tibber pattern: 00–06 = 0.12, evening = 0.38
+		testutil.ScenarioCheapNight, // price pattern: 00–06 = 0.12, evening = 0.38
 		testutil.ScenarioWinter,     // Solcast pattern: low yield
 		nextTargetTime(20, 0),       // target 20:00 — with MinPlanningWindowHrs=8 this plans for tomorrow
 		0.25,                        // holdAbovePrice
@@ -316,11 +307,11 @@ func TestScenario_CheapMidday(t *testing.T) {
 // Scenario 5: All prices expensive → no cheap slots found, normal/hold only
 // ──────────────────────────────────────────────────────────────────────────────
 
-// TestScenario_ExpensiveAll verifies graceful handling when Tibber has no cheap
+// TestScenario_ExpensiveAll verifies graceful handling when there are no cheap
 // slots (e.g. during a cold snap). The scheduler must not crash and must set
 // "hold" to preserve what is in the battery.
 func TestScenario_ExpensiveAll(t *testing.T) {
-	t.Log("=== Scenario: All Tibber prices expensive ===")
+	t.Log("=== Scenario: All prices expensive ===")
 
 	h := newHarness(t,
 		50,
@@ -408,24 +399,21 @@ func TestScenario_PollingLoop(t *testing.T) {
 
 // TestScenario_PlanningWindow verifies that when MinPlanningWindowHrs is set to 24
 // (meaning: always plan for tomorrow), the scheduler picks cheap night slots from
-// tomorrow's Tibber prices (00:00–06:00 at 0.12 EUR/kWh) instead of whatever
+// tomorrow's prices (00:00–06:00 at 0.12 EUR/kWh) instead of whatever
 // expensive slots remain today.
 func TestScenario_PlanningWindow(t *testing.T) {
 	t.Log("=== Scenario: MinPlanningWindowHrs=24 forces planning for tomorrow ===")
 
-	mockEvcc := testutil.NewMockEvcc(20, 0.38)
-	mockTibber := testutil.NewMockTibber(testutil.ScenarioCheapNight)
+	mockEvcc := testutil.NewMockEvcc(20, 0.38, testutil.ScenarioCheapNight)
 	mockSolcast := testutil.NewMockSolcast("test-site-id", testutil.ScenarioWinter)
 
 	t.Cleanup(func() {
 		mockEvcc.Close()
-		mockTibber.Close()
 		mockSolcast.Close()
 	})
 
 	cfg := &config.Config{
-		Evcc:   config.EvccConfig{URL: mockEvcc.URL(), PollInterval: config.Duration{Duration: 45 * time.Second}},
-		Tibber: config.TibberConfig{Token: "mock-token"},
+		Evcc: config.EvccConfig{URL: mockEvcc.URL(), PollInterval: config.Duration{Duration: 45 * time.Second}},
 		Solcast: config.SolcastConfig{
 			SiteID: "test-site-id", APIKey: "mock-api-key",
 			FetchTimes: []string{"06:00", "14:00"},
@@ -451,11 +439,10 @@ func TestScenario_PlanningWindow(t *testing.T) {
 	t.Cleanup(func() { database.Close() })
 
 	evccClient := evcc.New(mockEvcc.URL())
-	tibberClient := tibber.NewWithURL("mock-token", mockTibber.URL())
 	solcastClient := solcast.NewWithURL("test-site-id", "mock-api-key", mockSolcast.URL())
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	sched := scheduler.New(cfg, database, evccClient, tibberClient, solcastClient, log)
+	sched := scheduler.New(cfg, database, evccClient, solcastClient, log)
 
 	t.Log("--- Running Plan() with MinPlanningWindowHrs=24 ---")
 	if err := sched.Plan(); err != nil {
