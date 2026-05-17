@@ -42,10 +42,24 @@ battery:
   # Battery will never be commanded to discharge below this SOC.
   min_soc: 10                   # %
 
+  # Minimum hours before target_time that must remain when (re-)planning.
+  # If fewer hours remain until today's target, the scheduler plans for
+  # tomorrow instead — ensuring cheap night slots are always available.
+  # Production default: 8 h. Use 24 h to always plan a full day ahead.
+  min_planning_window_hours: 8  # hours
+
 # Database — SQLite file location (use a volume-mounted path in Docker)
 database:
   path: "/data/battery-scheduler.db"
 
+# Web status UI — served on http://<host>:<port>/
+# Set port: 0 to disable the web server entirely.
+web:
+  port: 8080
+
 # Logging level: debug | info | warn | error
 log:
   level: "info"
+  # Set dry_run: true to observe scheduling decisions without sending any
+  # commands to evcc. Equivalent to the -dry-run command-line flag.
+  # dry_run: false

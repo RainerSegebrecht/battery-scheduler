@@ -29,6 +29,7 @@ type Config struct {
 	Solcast  SolcastConfig  `yaml:"solcast"`
 	Battery  BatteryConfig  `yaml:"battery"`
 	Database DatabaseConfig `yaml:"database"`
+	Web      WebConfig      `yaml:"web"`
 	Log      LogConfig      `yaml:"log"`
 }
 
@@ -62,8 +63,13 @@ type DatabaseConfig struct {
 	Path string `yaml:"path"`
 }
 
+type WebConfig struct {
+	Port int `yaml:"port"` // TCP port for the HTTP status UI (default 8080, 0 = disabled)
+}
+
 type LogConfig struct {
-	Level string `yaml:"level"` // debug, info, warn, error
+	Level  string `yaml:"level"`   // debug, info, warn, error
+	DryRun bool   `yaml:"dry_run"` // if true: decisions are logged but never sent to evcc
 }
 
 // Load reads and parses the YAML config file at the given path.
@@ -124,6 +130,9 @@ func (c *Config) validate() error {
 	}
 	if c.Database.Path == "" {
 		c.Database.Path = "/data/battery-scheduler.db"
+	}
+	if c.Web.Port == 0 {
+		c.Web.Port = 8080
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"

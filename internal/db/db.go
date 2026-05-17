@@ -211,6 +211,62 @@ func (db *DB) LogState(s StateEntry) error {
 	return err
 }
 
+// RecentStateLog returns the n most recent state log entries, newest first.
+func (db *DB) RecentStateLog(n int) ([]StateEntry, error) {
+	rows, err := db.conn.Query(
+		`SELECT timestamp, battery_soc, battery_mode, grid_price, action, reason
+		 FROM state_log
+		 ORDER BY timestamp DESC
+		 LIMIT ?`,
+		n,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []StateEntry
+	for rows.Next() {
+		var e StateEntry
+		var tsStr string
+		if err := rows.Scan(&tsStr, &e.BatterySOC, &e.BatteryMode, &e.GridPrice, &e.Action, &e.Reason); err != nil {
+			return nil, err
+		}
+		e.Timestamp, _ = time.Parse(time.RFC3339, tsStr)
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// AllSlots returns all charging slots (past and future) ordered by start time.
+func (db *DB) AllSlots(limit int) ([]ChargingSlot, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, start_time, end_time, price_eur, active, created_at
+		 FROM charging_slots
+		 ORDER BY start_time DESC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var slots []ChargingSlot
+	for rows.Next() {
+		var s ChargingSlot
+		var startStr, endStr, createdStr string
+		if err := rows.Scan(&s.ID, &startStr, &endStr, &s.PriceEUR, &s.Active, &createdStr); err != nil {
+			return nil, err
+		}
+		s.StartTime, _ = time.Parse(time.RFC3339, startStr)
+		s.EndTime, _ = time.Parse(time.RFC3339, endStr)
+		s.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		slots = append(slots, s)
+	}
+	return slots, rows.Err()
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

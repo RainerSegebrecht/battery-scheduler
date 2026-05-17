@@ -25,19 +25,58 @@ func New(baseURL string) *Client {
 
 // SiteState holds the subset of /api/state we care about.
 type SiteState struct {
-	BatterySoC       float64 `json:"batterySoC"`       // current battery state of charge in %
-	BatteryPower     float64 `json:"batteryPower"`     // current battery power in W (positive = charging)
-	BatteryMode      string  `json:"batteryMode"`      // normal | hold | charge
-	GridPower        float64 `json:"gridPower"`        // current grid power in W (positive = import)
-	HomePower        float64 `json:"homePower"`        // current home consumption in W
-	PvPower          float64 `json:"pvPower"`          // current PV production in W
-	TariffGrid       float64 `json:"tariffGrid"`       // current grid tariff in EUR/kWh
+	BatterySoC              float64 // battery state of charge in %
+	BatteryPower            float64 // battery power in W (positive = charging, negative = discharging)
+	BatteryMode             string  // normal | hold | charge  (effective mode)
+	GridPower               float64 // grid power in W (positive = import, negative = export)
+	HomePower               float64 // home consumption in W
+	PvPower                 float64 // PV production in W
+	TariffGrid              float64 // current grid tariff in EUR/kWh
+	BatteryDischargeControl bool    // true = evcc protects battery from discharging during vehicle charging
+	VehicleCharging         bool    // true = at least one loadpoint is actively charging a vehicle
 }
 
-// stateResponse wraps the /api/state JSON envelope.
-type stateResponse struct {
-	Result SiteState `json:"result"`
+// UnmarshalJSON maps the nested evcc /api/state JSON structure to SiteState.
+func (s *SiteState) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Battery struct {
+			SoC   float64 `json:"soc"`
+			Power float64 `json:"power"`
+		} `json:"battery"`
+		BatteryMode             string `json:"batteryMode"`
+		BatteryDischargeControl bool   `json:"batteryDischargeControl"`
+		Grid                    struct {
+			Power float64 `json:"power"`
+		} `json:"grid"`
+		HomePower  float64 `json:"homePower"`
+		PvPower    float64 `json:"pvPower"`
+		TariffGrid float64 `json:"tariffGrid"`
+		Loadpoints []struct {
+			Charging bool `json:"charging"`
+		} `json:"loadpoints"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	s.BatterySoC = raw.Battery.SoC
+	s.BatteryPower = raw.Battery.Power
+	s.BatteryMode = raw.BatteryMode
+	s.BatteryDischargeControl = raw.BatteryDischargeControl
+	s.GridPower = raw.Grid.Power
+	s.HomePower = raw.HomePower
+	s.PvPower = raw.PvPower
+	s.TariffGrid = raw.TariffGrid
+	for _, lp := range raw.Loadpoints {
+		if lp.Charging {
+			s.VehicleCharging = true
+			break
+		}
+	}
+	return nil
 }
+
+// stateResponse — evcc returns state directly at the top level (no envelope).
+type stateResponse = SiteState
 
 // State fetches the current site state from evcc.
 func (c *Client) State() (*SiteState, error) {
@@ -55,7 +94,7 @@ func (c *Client) State() (*SiteState, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return nil, fmt.Errorf("decoding state: %w", err)
 	}
-	return &envelope.Result, nil
+	return &envelope, nil
 }
 
 // BatteryMode represents the battery operating mode.

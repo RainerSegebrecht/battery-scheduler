@@ -119,6 +119,21 @@
       },
       "showLog": true
     },
+    {
+      "name": "Integration: Dry-run mode",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/integration",
+      "args": ["-test.v", "-test.timeout", "60s", "-test.run", "TestScenario_DryRun"],
+      "buildFlags": "-v",
+      "env": {
+        "CGO_ENABLED": "0",
+        "GOTMPDIR": "${env:HOME}/tmp",
+        "TZ": "Europe/Berlin"
+      },
+      "showLog": true
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Run the main application (requires a config.yaml to exist)
@@ -130,6 +145,34 @@
       "mode": "debug",
       "program": "${workspaceFolder}/cmd/battery-scheduler",
       "args": ["-config", "${workspaceFolder}/config/config.yaml"],
+      "env": {
+        "CGO_ENABLED": "0",
+        "GOTMPDIR": "${env:HOME}/tmp",
+        "TZ": "Europe/Berlin"
+      },
+      "showLog": true
+    },
+    {
+      "name": "Run: dry-run mode",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/cmd/battery-scheduler",
+      "args": ["-config", "${workspaceFolder}/config/config.yaml", "-dry-run"],
+      "env": {
+        "CGO_ENABLED": "0",
+        "GOTMPDIR": "${env:HOME}/tmp",
+        "TZ": "Europe/Berlin"
+      },
+      "showLog": true
+    },
+    {
+      "name": "Run: status dashboard",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/cmd/battery-scheduler",
+      "args": ["-config", "${workspaceFolder}/config/config.yaml", "-status"],
       "env": {
         "CGO_ENABLED": "0",
         "GOTMPDIR": "${env:HOME}/tmp",

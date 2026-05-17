@@ -43,12 +43,13 @@ type testHarness struct {
 }
 
 // newHarness builds a full test environment.
-// batterySoC:  initial battery state of charge (%)
-// tariffGrid:  current Tibber price returned by evcc state (EUR/kWh)
-// priceScene:  the Tibber price pattern to use
-// solarScene:  the Solcast PV forecast to use
-// targetTime:  "HH:MM" — battery must be full by this time
-// holdPrice:   EUR/kWh above which the battery is held
+// batterySoC:           initial battery state of charge (%)
+// tariffGrid:           current Tibber price returned by evcc state (EUR/kWh)
+// priceScene:           the Tibber price pattern to use
+// solarScene:           the Solcast PV forecast to use
+// targetTime:           "HH:MM" — battery must be full by this time
+// holdPrice:            EUR/kWh above which the battery is held
+// minPlanningWindowHrs: minimum hours before target time to re-plan (use 25 to always plan for tomorrow)
 func newHarness(
 	t *testing.T,
 	batterySoC float64,
@@ -57,6 +58,7 @@ func newHarness(
 	solarScene testutil.SolarScenario,
 	targetTime string,
 	holdPrice float64,
+	minPlanningWindowHrs int,
 ) *testHarness {
 	t.Helper()
 
@@ -93,7 +95,7 @@ func newHarness(
 			TargetTime:           targetTime,
 			HoldAbovePrice:       holdPrice,
 			MinSOC:               10,
-			MinPlanningWindowHrs: 8, // same as production default
+			MinPlanningWindowHrs: minPlanningWindowHrs,
 		},
 		Database: config.DatabaseConfig{
 			Path: t.TempDir() + "/test.db",
@@ -149,6 +151,7 @@ func TestScenario_Winter_CheapNight(t *testing.T) {
 		testutil.ScenarioWinter,     // Solcast pattern: low yield
 		nextTargetTime(20, 0),       // target 20:00 — with MinPlanningWindowHrs=8 this plans for tomorrow
 		0.25,                        // holdAbovePrice
+		25,                          // minPlanningWindowHrs: always plan for tomorrow
 	)
 
 	// Step 1: Plan — should pick tomorrow's cheap night slots (00–06 at 0.12 EUR/kWh)
@@ -206,6 +209,7 @@ func TestScenario_Summer_NoGridCharge(t *testing.T) {
 		testutil.ScenarioSummer,  // high solar forecast
 		nextTargetTime(20, 0),
 		0.25,
+		25, // minPlanningWindowHrs: always plan for tomorrow
 	)
 
 	t.Log("--- Running Plan() ---")
@@ -242,6 +246,7 @@ func TestScenario_BatteryFull(t *testing.T) {
 		testutil.ScenarioWinter,
 		nextTargetTime(20, 0),
 		0.25,
+		25, // minPlanningWindowHrs: always plan for tomorrow
 	)
 
 	t.Log("--- Running Plan() ---")
@@ -280,6 +285,7 @@ func TestScenario_CheapMidday(t *testing.T) {
 		testutil.ScenarioOvercast, // ~5 kWh P10 — below threshold of 8
 		nextTargetTime(20, 0),
 		0.25,
+		25, // minPlanningWindowHrs: always plan for tomorrow
 	)
 
 	t.Log("--- Running Plan() ---")
@@ -323,6 +329,7 @@ func TestScenario_ExpensiveAll(t *testing.T) {
 		testutil.ScenarioWinter,
 		nextTargetTime(20, 0),
 		0.25,
+		25, // minPlanningWindowHrs: always plan for tomorrow
 	)
 
 	t.Log("--- Running Plan() ---")
@@ -362,6 +369,7 @@ func TestScenario_PollingLoop(t *testing.T) {
 		testutil.ScenarioWinter,
 		nextTargetTime(20, 0),
 		0.25,
+		25, // minPlanningWindowHrs: always plan for tomorrow
 	)
 
 	t.Log("--- Running Plan() ---")
@@ -470,6 +478,102 @@ func TestScenario_PlanningWindow(t *testing.T) {
 	// Price 0.38 > holdAbovePrice 0.25 → hold (not in tomorrow's night slot yet)
 	if lastMode != "hold" {
 		t.Errorf("expected hold (planning window pushed to tomorrow, not in cheap slot yet), got %q", lastMode)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Scenario 8: DryRun mode — decisions logged, no commands sent to evcc
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestScenario_DryRun verifies that when DryRun is enabled, Control() logs a
+// decision to the DB (with "[dry-run]" prefix in Reason) but does NOT call
+// SetBatteryMode on evcc.
+func TestScenario_DryRun(t *testing.T) {
+	t.Log("=== Scenario: DryRun mode — no evcc commands ===")
+
+	h := newHarness(t,
+		30,
+		0.38, // expensive — would normally trigger "hold"
+		testutil.ScenarioCheapNight,
+		testutil.ScenarioWinter,
+		nextTargetTime(20, 0),
+		0.25,
+		25, // minPlanningWindowHrs: always plan for tomorrow
+	)
+
+	h.sched.DryRun = true
+
+	t.Log("--- Running Control() with DryRun=true ---")
+	if err := h.sched.Control(); err != nil {
+		t.Fatalf("Control() failed: %v", err)
+	}
+
+	// evcc must NOT have received any batterymode command
+	history := h.evccMock.ModeHistory()
+	t.Logf("evcc mode history: %v", history)
+	if len(history) != 0 {
+		t.Errorf("expected no evcc commands in dry-run mode, got %d: %v", len(history), history)
+	}
+
+	// DB must contain a state-log entry with "[dry-run]" in the Reason
+	entries, err := h.database.RecentStateLog(1)
+	if err != nil {
+		t.Fatalf("RecentStateLog failed: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected a state-log entry in dry-run mode, got none")
+	}
+	t.Logf("state-log reason: %q", entries[0].Reason)
+	if !containsDryRun(entries[0].Reason) {
+		t.Errorf("expected '[dry-run]' in state-log reason, got %q", entries[0].Reason)
+	}
+}
+
+// containsDryRun returns true if s contains the dry-run marker.
+func containsDryRun(s string) bool {
+	return len(s) >= 9 && s[:9] == "[dry-run]"
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Scenario 9: Vehicle charging + batteryDischargeControl → hold
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestScenario_VehicleCharging verifies that when a vehicle is charging AND
+// evcc has batteryDischargeControl enabled, the scheduler sets "hold" even
+// when the price would normally allow "normal" mode.
+func TestScenario_VehicleCharging(t *testing.T) {
+	t.Log("=== Scenario: Vehicle charging + batteryDischargeControl ===")
+
+	h := newHarness(t,
+		70,   // battery at 70%
+		0.18, // price below hold threshold — would normally be "normal"
+		testutil.ScenarioUniform,
+		testutil.ScenarioSummer, // solar sufficient → no grid charge slots
+		nextTargetTime(20, 0),
+		0.25,
+		25,
+	)
+
+	// Simulate batteryDischargeControl active and a vehicle charging
+	h.evccMock.SetDischargeControl(true, true)
+
+	t.Log("--- Running Plan() ---")
+	if err := h.sched.Plan(); err != nil {
+		t.Fatalf("Plan() failed: %v", err)
+	}
+
+	t.Log("--- Running Control() — price 0.18 < hold threshold, but vehicle charging ---")
+	if err := h.sched.Control(); err != nil {
+		t.Fatalf("Control() failed: %v", err)
+	}
+
+	lastMode := h.evccMock.LastMode()
+	t.Logf("batterymode sent to evcc: %q", lastMode)
+	t.Logf("mode history: %v", h.evccMock.ModeHistory())
+
+	// Despite low price, battery must be held to protect against discharge
+	if lastMode != "hold" {
+		t.Errorf("expected hold (vehicle charging + discharge control), got %q", lastMode)
 	}
 }
 

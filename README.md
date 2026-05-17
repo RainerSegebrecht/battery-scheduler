@@ -51,7 +51,48 @@ Alle Zustände, Pläne und Prognosen werden in einer **SQLite-Datenbank** gespei
 
 ---
 
-## Voraussetzungen
+## Betriebsmodi
+
+Der Scheduler kennt drei Betriebsmodi, die über Kommandozeilen-Flags gewählt werden:
+
+### Normal (Standard)
+
+```bash
+battery-scheduler -config config/config.yaml
+```
+
+Vollständiger Betrieb: Plan() und Control() laufen zyklisch. Befehle werden an evcc gesendet.
+
+### Dry-run (`-dry-run`)
+
+```bash
+battery-scheduler -config config/config.yaml -dry-run
+```
+
+Alle Entscheidungen werden berechnet und in der Datenbank protokolliert (`[dry-run]`-Prefix im `state_log`), aber **kein** `batterymode`-Befehl wird an evcc gesendet. Ideal zum Testen einer neuen Konfiguration ohne Auswirkung auf die laufende Anlage.
+
+### Status-Dashboard (Web-UI)
+
+Sobald der Container läuft, ist das Web-Dashboard unter `http://<host>:8080/` erreichbar. Es aktualisiert sich automatisch alle 30 Sekunden und zeigt:
+
+- **Live-Zustand:** Batterie-SoC, Modus, PV-Leistung, Netzbezug, Tibber-Preis
+- **Geplante Ladeslots** der nächsten 48 h (aktiver Slot wird hervorgehoben)
+- **Alle Ladeslots** (letzte 20 Einträge)
+- **Letzte Steuerungsentscheidungen** mit Begründung (Dry-run-Einträge markiert)
+
+Der Port ist in `config.yaml` über `web.port` konfigurierbar (Standard: 8080). Mit `port: 0` wird der Web-Server deaktiviert.
+
+### Status-Dashboard (`-status`, Terminal)
+
+```bash
+battery-scheduler -config config/config.yaml -status
+```
+
+Einmaliger Read-only-Aufruf: Zeigt den aktuellen Systemzustand, die nächsten geplanten Slots und die letzten Steuerungsentscheidungen als ANSI-Terminal-Dashboard an. Beendet sich danach selbst. Kein Schreibzugriff auf evcc oder Datenbank.
+
+---
+
+
 
 - Docker + Docker Compose
 - evcc läuft im selben Docker-Netzwerk (oder ist per URL erreichbar)
@@ -242,6 +283,8 @@ Dadurch lässt sich das gesamte System im Debugger Schritt für Schritt verfolge
 | `TestScenario_CheapMidday` | Günstiger Mittag, bewölkt | Mittagsstunden werden geplant, kein `hold` |
 | `TestScenario_ExpensiveAll` | Alle Preise hoch | Kein günstiger Slot, Control → `hold` |
 | `TestScenario_PollingLoop` | 5× Control() hintereinander | Alle 5 Befehle identisch (kein Flip) |
+| `TestScenario_PlanningWindow` | MinPlanningWindowHrs=24 | Immer für morgen planen, Control → `hold` |
+| `TestScenario_DryRun` | DryRun=true, kein evcc-Befehl | DB-Eintrag mit `[dry-run]`, evcc leer |
 
 ### Tests ausführen
 
@@ -273,14 +316,17 @@ Die offizielle [Go-Extension für VS Code](https://marketplace.visualstudio.com/
 
 | Konfiguration | Beschreibung |
 |---|---|
-| **Integration Tests (all)** | Alle 6 Szenarien mit Ausgabe |
+| **Integration Tests (all)** | Alle 8 Szenarien mit Ausgabe |
 | **Integration: Winter + CheapNight** | Nur das Winter-Szenario |
 | **Integration: Summer (no grid charge)** | Nur das Sommer-Szenario |
 | **Integration: Battery full** | Batterie bereits voll |
 | **Integration: Cheap midday** | Günstiger Mittag |
 | **Integration: All prices expensive** | Alle Preise teuer |
 | **Integration: Polling loop** | 5 aufeinanderfolgende Ticks |
+| **Integration: Dry-run mode** | DryRun-Szenario |
 | **Run battery-scheduler** | Startet die Anwendung (erfordert `config/config.yaml`) |
+| **Run: dry-run mode** | Startet im Dry-run-Modus (kein evcc-Befehl) |
+| **Run: status dashboard** | Zeigt einmalig das Terminal-Dashboard an |
 
 4. Breakpoints setzen (z.B. in `internal/scheduler/scheduler.go` in `Plan()` oder `decideAction()`)
 5. `F5` drücken — der Debugger hält an den Breakpoints an

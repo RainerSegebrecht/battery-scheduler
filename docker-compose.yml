@@ -5,13 +5,15 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Europe/Berlin
+    ports:
+      # Web status UI — http://localhost:8080
+      # Port kann in config.yaml unter web.port geändert werden.
+      - "8080:8080"
     volumes:
       # Read-only config — place your config.yaml here
       - ./config:/config:ro
       # Persistent SQLite database
       - battery-scheduler-data:/data
-    # If evcc runs in the same Docker network, use its service name as URL.
-    # Otherwise set evcc.url in config.yaml to the host IP / hostname.
     networks:
       - evcc_network
 
@@ -19,7 +21,8 @@ volumes:
   battery-scheduler-data:
 
 networks:
-  # Use the same network as evcc so the container can reach it by service name.
-  # If evcc uses a different network name, adjust accordingly.
+  # Shared network with evcc. If evcc runs in a separate Compose project,
+  # set external: true and adjust the name to match that project's network.
+  # To find the name: docker network ls
   evcc_network:
-    external: true
+    driver: bridge

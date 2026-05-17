@@ -28,13 +28,15 @@ type MockEvcc struct {
 }
 
 type evccState struct {
-	BatterySoC   float64
-	BatteryPower float64
-	BatteryMode  string
-	GridPower    float64
-	HomePower    float64
-	PvPower      float64
-	TariffGrid   float64
+	BatterySoC              float64
+	BatteryPower            float64
+	BatteryMode             string
+	BatteryDischargeControl bool
+	GridPower               float64
+	HomePower               float64
+	PvPower                 float64
+	TariffGrid              float64
+	VehicleCharging         bool
 }
 
 // NewMockEvcc creates and starts a mock evcc server with the given initial state.
@@ -75,6 +77,15 @@ func (m *MockEvcc) SetState(soc, tariff float64) {
 	m.state.TariffGrid = tariff
 }
 
+// SetDischargeControl allows tests to simulate evcc's batteryDischargeControl
+// and vehicle-charging state.
+func (m *MockEvcc) SetDischargeControl(dischargeControl bool, vehicleCharging bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state.BatteryDischargeControl = dischargeControl
+	m.state.VehicleCharging = vehicleCharging
+}
+
 // ModeHistory returns all batterymode commands that were received in order.
 func (m *MockEvcc) ModeHistory() []string {
 	m.mu.Lock()
@@ -101,15 +112,25 @@ func (m *MockEvcc) handleState(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"result": map[string]any{
-			"batterySoC":   s.BatterySoC,
-			"batteryPower": s.BatteryPower,
-			"batteryMode":  s.BatteryMode,
-			"gridPower":    s.GridPower,
-			"homePower":    s.HomePower,
-			"pvPower":      s.PvPower,
-			"tariffGrid":   s.TariffGrid,
+		"battery": map[string]any{
+			"soc":   s.BatterySoC,
+			"power": s.BatteryPower,
 		},
+		"batteryMode":             s.BatteryMode,
+		"batteryDischargeControl": s.BatteryDischargeControl,
+		"grid": map[string]any{
+			"power": s.GridPower,
+		},
+		"homePower":  s.HomePower,
+		"pvPower":    s.PvPower,
+		"tariffGrid": s.TariffGrid,
+		// loadpoints: empty by default — no vehicle charging in tests unless explicitly set
+		"loadpoints": func() []any {
+			if s.VehicleCharging {
+				return []any{map[string]any{"charging": true}}
+			}
+			return []any{}
+		}(),
 	})
 }
 

@@ -1,7 +1,12 @@
 # Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /build
+
+# GOTOOLCHAIN=auto allows Go to download the toolchain version required by
+# go.mod if the bundled version is too old. This is needed because go.mod
+# may require a newer Go than the base image ships.
+ENV GOTOOLCHAIN=auto
 
 # Copy module files first for layer caching
 COPY go.mod go.sum ./
@@ -25,5 +30,8 @@ COPY --from=builder /build/battery-scheduler /app/battery-scheduler
 # /config  → mount your config.yaml here (read-only)
 # /data    → mount persistent volume for SQLite DB here
 VOLUME ["/config", "/data"]
+
+# Web status UI
+EXPOSE 8080
 
 ENTRYPOINT ["/app/battery-scheduler", "-config", "/config/config.yaml"]

@@ -23,6 +23,7 @@ type Scheduler struct {
 	solcast *solcast.Client
 	log     *slog.Logger
 
+	DryRun       bool      // if true: decisions are logged but never sent to evcc
 	lastPlanDate time.Time // track which day we last planned for
 }
 
@@ -162,26 +163,43 @@ func (s *Scheduler) Control() error {
 	// Determine desired action
 	action, reason := s.decideAction(now, state)
 
-	s.log.Debug("control loop",
-		"soc", state.BatterySoC,
-		"grid_price", state.TariffGrid,
+	dryRunPrefix := ""
+	if s.DryRun {
+		dryRunPrefix = "[DRY-RUN] "
+	}
+
+	s.log.Info(dryRunPrefix+"control decision",
+		"soc_%", state.BatterySoC,
+		"pv_w", state.PvPower,
+		"grid_price_eur_kwh", state.TariffGrid,
+		"hold_threshold_eur_kwh", s.cfg.Battery.HoldAbovePrice,
+		"target_soc_%", s.cfg.Battery.TargetSOC,
+		"min_soc_%", s.cfg.Battery.MinSOC,
 		"action", action,
 		"reason", reason,
 	)
 
-	// Send command to evcc
-	if err := s.evcc.SetBatteryMode(evcc.BatteryMode(action)); err != nil {
-		return fmt.Errorf("setting battery mode: %w", err)
+	if s.DryRun {
+		s.log.Info("[DRY-RUN] would send batterymode to evcc — skipping", "mode", action)
+	} else {
+		// Send command to evcc
+		if err := s.evcc.SetBatteryMode(evcc.BatteryMode(action)); err != nil {
+			return fmt.Errorf("setting battery mode: %w", err)
+		}
 	}
 
-	// Log to DB
+	// Log to DB (always, even in dry-run — so status view has data)
+	logReason := reason
+	if s.DryRun {
+		logReason = "[dry-run] " + reason
+	}
 	_ = s.db.LogState(db.StateEntry{
 		Timestamp:   now,
 		BatterySOC:  state.BatterySoC,
 		BatteryMode: string(action),
 		GridPrice:   state.TariffGrid,
 		Action:      string(action),
-		Reason:      reason,
+		Reason:      logReason,
 	})
 
 	return nil
@@ -214,6 +232,15 @@ func (s *Scheduler) decideAction(now time.Time, state *evcc.SiteState) (evcc.Bat
 			"price %.4f EUR/kWh > hold threshold %.4f EUR/kWh, preserving battery for peak",
 			state.TariffGrid, s.cfg.Battery.HoldAbovePrice,
 		)
+	}
+
+	// evcc discharge protection: if batteryDischargeControl is active and a
+	// vehicle is currently charging, setting "normal" would allow evcc to
+	// discharge the battery into the car — which is likely unwanted.
+	// In that case we keep "hold" so the battery is not drained.
+	if state.BatteryDischargeControl && state.VehicleCharging {
+		return evcc.BatteryModeHold,
+			"vehicle charging + batteryDischargeControl active — holding battery to prevent discharge"
 	}
 
 	return evcc.BatteryModeNormal, "no active slot, price below hold threshold — normal operation"
