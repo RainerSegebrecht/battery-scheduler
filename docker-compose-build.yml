@@ -1,6 +1,6 @@
 services:
   battery-scheduler:
-    image: ghcr.io/rainersegebrecht/battery-scheduler:latest
+    build: .
     container_name: battery-scheduler
     restart: unless-stopped
     environment:
