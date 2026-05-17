@@ -1,0 +1,19 @@
+{
+  // Recommended VS Code settings for this Go project
+  "go.testEnvVars": {
+    "CGO_ENABLED": "0",
+    "GOTMPDIR": "${env:HOME}/tmp",
+    "TZ": "Europe/Berlin"
+  },
+  "go.testFlags": ["-v", "-timeout", "60s"],
+  "go.buildFlags": ["-tags", ""],
+  "go.toolsEnvVars": {
+    "CGO_ENABLED": "0"
+  },
+  "[go]": {
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  }
+}

@@ -185,17 +185,115 @@ SQLite (Volume)    ──┘         │
 ```
 battery-scheduler/
 ├── cmd/battery-scheduler/main.go        # Einstiegspunkt, Signal-Handling, Ticker
+├── integration/
+│   └── integration_test.go             # Integrationstests (6 Szenarien)
 ├── internal/
 │   ├── config/config.go                 # YAML-Laden und Validierung
 │   ├── db/db.go                         # SQLite: Slots, Forecasts, State-Log
 │   ├── evcc/client.go                   # evcc REST: State lesen, BatteryMode setzen
 │   ├── tibber/client.go                 # Tibber GraphQL: Stundenpreise heute+morgen
 │   ├── solcast/client.go                # Solcast REST: PV-Prognose (48h, P10/P50/P90)
-│   └── scheduler/scheduler.go          # Plan() und Control() Kernlogik
+│   ├── scheduler/scheduler.go          # Plan() und Control() Kernlogik
+│   └── testutil/mocks.go               # Mock-HTTP-Server für Tests
+├── .vscode/
+│   ├── launch.json                      # VS Code Debugger-Konfigurationen
+│   └── settings.json                    # Go-Einstellungen für VS Code
 ├── config/config.example.yaml
 ├── Dockerfile                           # Multi-stage, CGO_ENABLED=0, Alpine
 └── docker-compose.yml
 ```
+
+---
+
+## Tests
+
+### Teststrategie
+
+Die Integrationstests in `integration/integration_test.go` starten für jeden Test drei echte HTTP-Server (`net/http/httptest`) als Ersatz für evcc, Tibber und Solcast. Die **produktive Scheduler-Logik läuft unverändert** — nur die API-URLs werden auf die Mock-Server umgebogen.
+
+Dadurch lässt sich das gesamte System im Debugger Schritt für Schritt verfolgen, ohne dass reale API-Tokens oder eine laufende evcc-Instanz nötig sind.
+
+### Mock-Szenarien
+
+**Tibber-Preismuster (`PriceScenario`):**
+
+| Szenario | Beschreibung |
+|---|---|
+| `cheap_night` | 00–06 Uhr sehr günstig (0,12 €), 17–21 Uhr teuer (0,38 €) |
+| `cheap_midday` | 10–14 Uhr günstig (0,14 €, Wind/Solar-Überschuss), Abend teuer |
+| `uniform` | Gleichmäßiger Preis (Standard: 0,28 €) den ganzen Tag |
+| `expensive_all` | Alles teuer (0,40 €) — kein guter Ladezeitpunkt vorhanden |
+
+**Solcast-Solarprofile (`SolarScenario`):**
+
+| Szenario | P10-Tagesertrag | Bedeutung |
+|---|---|---|
+| `winter` | ~2,3 kWh | Netzladen erforderlich |
+| `overcast` | ~7,8 kWh | Grenzfall (knapp unter Schwelle) |
+| `summer` | ~21 kWh | Genug Solar, kein Netzladen |
+
+### Testszenarien
+
+| Test | Beschreibung | Erwartetes Ergebnis |
+|---|---|---|
+| `TestScenario_Winter_CheapNight` | Winter, SoC 20%, teurer aktueller Preis | Plan wählt Nachtstunden, Control → `hold` |
+| `TestScenario_Summer_NoGridCharge` | Hohe Solarprognose | Kein Netzladen geplant, Control → `normal` |
+| `TestScenario_BatteryFull` | SoC 100% | Kein Laden nötig, Control → `normal` oder `hold` |
+| `TestScenario_CheapMidday` | Günstiger Mittag, bewölkt | Mittagsstunden werden geplant, kein `hold` |
+| `TestScenario_ExpensiveAll` | Alle Preise hoch | Kein günstiger Slot, Control → `hold` |
+| `TestScenario_PollingLoop` | 5× Control() hintereinander | Alle 5 Befehle identisch (kein Flip) |
+
+### Tests ausführen
+
+```bash
+# Alle Integrationstests
+CGO_ENABLED=0 GOTMPDIR=~/tmp go test ./integration/... -v
+
+# Einzelnes Szenario
+CGO_ENABLED=0 GOTMPDIR=~/tmp go test ./integration/... -v -run TestScenario_Winter_CheapNight
+```
+
+> **Hinweis:** `GOTMPDIR` muss auf ein Verzeichnis mit Ausführungsrechten zeigen. Auf manchen Linux-Systemen ist `/tmp` mit `noexec` gemountet.
+
+---
+
+## Debugging in VS Code
+
+### Voraussetzung
+
+Die offizielle [Go-Extension für VS Code](https://marketplace.visualstudio.com/items?itemName=golang.go) (`golang.go`) muss installiert sein.
+
+### Starten
+
+1. Repository in VS Code öffnen: `code /pfad/zu/battery-scheduler`
+2. Seitliche Debug-Ansicht öffnen (`Ctrl+Shift+D`)
+3. Im Dropdown oben eine der vorbereiteten Konfigurationen wählen:
+
+> **Hinweis:** Im VS Code Go-Debugger (`mode: test`) werden `args` direkt an das kompilierte Test-Binary übergeben — nicht an `go test`. Deshalb stehen in `launch.json` `-test.v` statt `-v` und `-test.run` statt `-run`. Das ist bereits korrekt hinterlegt.
+
+| Konfiguration | Beschreibung |
+|---|---|
+| **Integration Tests (all)** | Alle 6 Szenarien mit Ausgabe |
+| **Integration: Winter + CheapNight** | Nur das Winter-Szenario |
+| **Integration: Summer (no grid charge)** | Nur das Sommer-Szenario |
+| **Integration: Battery full** | Batterie bereits voll |
+| **Integration: Cheap midday** | Günstiger Mittag |
+| **Integration: All prices expensive** | Alle Preise teuer |
+| **Integration: Polling loop** | 5 aufeinanderfolgende Ticks |
+| **Run battery-scheduler** | Startet die Anwendung (erfordert `config/config.yaml`) |
+
+4. Breakpoints setzen (z.B. in `internal/scheduler/scheduler.go` in `Plan()` oder `decideAction()`)
+5. `F5` drücken — der Debugger hält an den Breakpoints an
+
+### Empfohlene Breakpoints zum Einstieg
+
+| Datei | Zeile | Was passiert hier |
+|---|---|---|
+| `internal/scheduler/scheduler.go` | `func (s *Scheduler) Plan()` | Beginn der Planung |
+| `internal/scheduler/scheduler.go` | `needsGridCharge := ...` | Entscheidung: Netzladen ja/nein? |
+| `internal/scheduler/scheduler.go` | `func (s *Scheduler) selectCheapestSlots` | Slot-Auswahl aus Tibber-Preisen |
+| `internal/scheduler/scheduler.go` | `func (s *Scheduler) decideAction` | Entscheidung pro Control-Tick |
+| `internal/testutil/mocks.go` | `func (m *MockEvcc) handleBatteryMode` | Hier kommt der Befehl von evcc an |
 
 ---
 

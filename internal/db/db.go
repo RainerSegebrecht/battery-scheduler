@@ -25,9 +25,9 @@ type ChargingSlot struct {
 
 // ForecastEntry stores the latest Solcast and Tibber fetch results.
 type ForecastEntry struct {
-	FetchedAt      time.Time
-	SolcastKWh     float64
-	TibberFetched  bool
+	FetchedAt     time.Time
+	SolcastKWh    float64
+	TibberFetched bool
 }
 
 // StateEntry stores the last known state for audit/debug purposes.
@@ -116,6 +116,36 @@ func (db *DB) UpsertChargingSlots(slots []ChargingSlot) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// UpcomingSlots returns all active charging slots that start in the future.
+// Useful for tests to inspect what was planned.
+func (db *DB) UpcomingSlots() ([]ChargingSlot, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, start_time, end_time, price_eur, active, created_at
+		 FROM charging_slots
+		 WHERE active = 1 AND start_time > ?
+		 ORDER BY start_time ASC`,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var slots []ChargingSlot
+	for rows.Next() {
+		var s ChargingSlot
+		var startStr, endStr, createdStr string
+		if err := rows.Scan(&s.ID, &startStr, &endStr, &s.PriceEUR, &s.Active, &createdStr); err != nil {
+			return nil, err
+		}
+		s.StartTime, _ = time.Parse(time.RFC3339, startStr)
+		s.EndTime, _ = time.Parse(time.RFC3339, endStr)
+		s.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		slots = append(slots, s)
+	}
+	return slots, rows.Err()
 }
 
 // ActiveSlotAt returns the active charging slot that covers the given time, if any.

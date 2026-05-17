@@ -48,13 +48,14 @@ type SolcastConfig struct {
 }
 
 type BatteryConfig struct {
-	CapacityKWh       float64 `yaml:"capacity_kwh"`        // total usable battery capacity
-	MaxChargePowerKW  float64 `yaml:"max_charge_power_kw"` // max grid charge power
-	SolarThresholdKWh float64 `yaml:"solar_threshold_kwh"` // if solcast forecast >= this, skip grid charging
-	TargetSOC         int     `yaml:"target_soc"`          // desired SOC % at target time
-	TargetTime        string  `yaml:"target_time"`         // "HH:MM" local time
-	HoldAbovePrice    float64 `yaml:"hold_above_price"`    // EUR/kWh: hold battery when price is above this
-	MinSOC            int     `yaml:"min_soc"`             // never discharge below this %
+	CapacityKWh          float64 `yaml:"capacity_kwh"`              // total usable battery capacity
+	MaxChargePowerKW     float64 `yaml:"max_charge_power_kw"`       // max grid charge power
+	SolarThresholdKWh    float64 `yaml:"solar_threshold_kwh"`       // if solcast forecast >= this, skip grid charging
+	TargetSOC            int     `yaml:"target_soc"`                // desired SOC % at target time
+	TargetTime           string  `yaml:"target_time"`               // "HH:MM" local time
+	HoldAbovePrice       float64 `yaml:"hold_above_price"`          // EUR/kWh: hold battery when price is above this
+	MinSOC               int     `yaml:"min_soc"`                   // never discharge below this %
+	MinPlanningWindowHrs int     `yaml:"min_planning_window_hours"` // if less than this many hours remain until target_time today, plan for tomorrow instead (default 8)
 }
 
 type DatabaseConfig struct {
@@ -117,6 +118,9 @@ func (c *Config) validate() error {
 	}
 	if _, err := time.Parse("15:04", c.Battery.TargetTime); err != nil {
 		return fmt.Errorf("battery.target_time must be in HH:MM format: %w", err)
+	}
+	if c.Battery.MinPlanningWindowHrs <= 0 {
+		c.Battery.MinPlanningWindowHrs = 8 // plan for tomorrow if fewer than 8h remain today
 	}
 	if c.Database.Path == "" {
 		c.Database.Path = "/data/battery-scheduler.db"

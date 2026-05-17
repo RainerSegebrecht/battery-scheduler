@@ -8,18 +8,25 @@ import (
 	"time"
 )
 
-const tibberGraphQLURL = "https://api.tibber.com/v1-beta/gql"
+const defaultTibberURL = "https://api.tibber.com/v1-beta/gql"
 
 // Client is a Tibber GraphQL API client.
 type Client struct {
 	token      string
+	baseURL    string // overridable for testing
 	httpClient *http.Client
 }
 
-// New creates a new Tibber client.
+// New creates a new Tibber client pointing to the real Tibber API.
 func New(token string) *Client {
+	return NewWithURL(token, defaultTibberURL)
+}
+
+// NewWithURL creates a Tibber client with a custom GraphQL endpoint (used in tests).
+func NewWithURL(token, baseURL string) *Client {
 	return &Client{
-		token: token,
+		token:   token,
+		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -98,7 +105,7 @@ func (c *Client) Prices() ([]PriceSlot, error) {
 		return nil, fmt.Errorf("marshalling query: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, tibberGraphQLURL, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.baseURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}

@@ -50,17 +50,17 @@ func New(
 func (s *Scheduler) Plan() error {
 	now := time.Now()
 
-	// --- 1. Fetch Solcast forecast ---
+	// --- 1. Determine the target time to plan for ---
+	// If fewer than MinPlanningWindowHrs remain until today's target time, plan
+	// for tomorrow instead. This ensures enough cheap slots are available.
+	targetTime := s.nextTargetTime(now)
+	s.log.Info("planning for target", "target", targetTime.Local().Format("2006-01-02 15:04"), "window_remaining", targetTime.Sub(now).Round(time.Minute))
+
+	// --- 2. Fetch Solcast forecast ---
 	s.log.Info("fetching Solcast forecast")
 	forecastPeriods, err := s.solcast.Forecast()
 	if err != nil {
 		return fmt.Errorf("solcast forecast: %w", err)
-	}
-
-	// Determine target day: if we're already past the target time today, plan for tomorrow
-	targetTime := s.targetTimeToday(now)
-	if now.After(targetTime) {
-		targetTime = targetTime.Add(24 * time.Hour)
 	}
 
 	solarKWh := solcast.DailyKWh(forecastPeriods, targetTime)
@@ -142,9 +142,9 @@ func (s *Scheduler) Plan() error {
 func (s *Scheduler) Control() error {
 	now := time.Now()
 
-	// Re-plan if we haven't planned for today's target yet
-	targetToday := s.targetTimeToday(now)
-	planDay := targetToday.Truncate(24 * time.Hour)
+	// Re-plan if we haven't planned for the upcoming target day yet
+	targetTime := s.nextTargetTime(now)
+	planDay := targetTime.Truncate(24 * time.Hour)
 	if !s.lastPlanDate.Equal(planDay) {
 		if err := s.Plan(); err != nil {
 			s.log.Warn("planning failed, using existing schedule", "err", err)
@@ -274,9 +274,17 @@ func (s *Scheduler) selectCheapestSlots(prices []tibber.PriceSlot, before time.T
 	return slots
 }
 
-// targetTimeToday returns the target time (from config) for the given day in local time.
-func (s *Scheduler) targetTimeToday(ref time.Time) time.Time {
-	loc := ref.Location()
+// nextTargetTime returns the target time to plan for.
+// If fewer than MinPlanningWindowHrs hours remain until today's target, it returns
+// tomorrow's target time — ensuring enough Tibber slots (including night hours) are available.
+func (s *Scheduler) nextTargetTime(now time.Time) time.Time {
+	loc := now.Location()
 	t, _ := time.ParseInLocation("15:04", s.cfg.Battery.TargetTime, loc)
-	return time.Date(ref.Year(), ref.Month(), ref.Day(), t.Hour(), t.Minute(), 0, 0, loc)
+	todayTarget := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, loc)
+
+	minWindow := time.Duration(s.cfg.Battery.MinPlanningWindowHrs) * time.Hour
+	if now.After(todayTarget) || todayTarget.Sub(now) < minWindow {
+		return todayTarget.Add(24 * time.Hour)
+	}
+	return todayTarget
 }

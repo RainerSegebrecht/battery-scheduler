@@ -7,18 +7,27 @@ import (
 	"time"
 )
 
+const defaultSolcastBaseURL = "https://api.solcast.com.au"
+
 // Client is a Solcast API client for rooftop PV forecasts.
 type Client struct {
 	siteID     string
 	apiKey     string
+	baseURL    string // overridable for testing
 	httpClient *http.Client
 }
 
-// New creates a new Solcast client.
+// New creates a new Solcast client pointing to the real Solcast API.
 func New(siteID, apiKey string) *Client {
+	return NewWithURL(siteID, apiKey, defaultSolcastBaseURL)
+}
+
+// NewWithURL creates a Solcast client with a custom base URL (used in tests).
+func NewWithURL(siteID, apiKey, baseURL string) *Client {
 	return &Client{
-		siteID: siteID,
-		apiKey: apiKey,
+		siteID:  siteID,
+		apiKey:  apiKey,
+		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -46,8 +55,8 @@ type solcastResponse struct {
 // Forecast fetches the rooftop PV forecast from Solcast.
 func (c *Client) Forecast() ([]ForecastPeriod, error) {
 	url := fmt.Sprintf(
-		"https://api.solcast.com.au/rooftop_sites/%s/forecasts?format=json&hours=48",
-		c.siteID,
+		"%s/rooftop_sites/%s/forecasts?format=json&hours=48",
+		c.baseURL, c.siteID,
 	)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
