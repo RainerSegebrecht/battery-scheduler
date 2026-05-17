@@ -23,8 +23,9 @@ type Scheduler struct {
 	solcast *solcast.Client
 	log     *slog.Logger
 
-	DryRun       bool      // if true: decisions are logged but never sent to evcc
-	lastPlanDate time.Time // track which day we last planned for
+	DryRun            bool      // if true: decisions are logged but never sent to evcc
+	lastPlanDate      time.Time // track which day we last planned for
+	nextPlanNotBefore time.Time // rate-limit: do not call Plan() before this time
 }
 
 // New creates a new Scheduler instance.
@@ -143,14 +144,24 @@ func (s *Scheduler) Plan() error {
 func (s *Scheduler) Control() error {
 	now := time.Now()
 
-	// Re-plan if we haven't planned for the upcoming target day yet
+	// Re-plan if we haven't planned for the upcoming target day yet,
+	// and the rate-limit window has passed.
 	targetTime := s.nextTargetTime(now)
 	planDay := targetTime.Truncate(24 * time.Hour)
 	if !s.lastPlanDate.Equal(planDay) {
-		if err := s.Plan(); err != nil {
+		if now.Before(s.nextPlanNotBefore) {
+			s.log.Debug("skipping re-plan, rate-limit active",
+				"retry_after", s.nextPlanNotBefore.Local().Format("15:04:05"))
+		} else if err := s.Plan(); err != nil {
 			s.log.Warn("planning failed, using existing schedule", "err", err)
+			// Back off until the next configured fetch time to avoid hammering
+			// the Solcast API (free tier: 10 calls/day).
+			s.nextPlanNotBefore = nextFetchTimeAfter(now, s.cfg.Solcast.FetchTimes)
+			s.log.Info("Solcast rate-limit backoff, next attempt",
+				"at", s.nextPlanNotBefore.Local().Format("2006-01-02 15:04"))
 		} else {
 			s.lastPlanDate = planDay
+			s.nextPlanNotBefore = time.Time{} // reset backoff on success
 		}
 	}
 
@@ -314,4 +325,31 @@ func (s *Scheduler) nextTargetTime(now time.Time) time.Time {
 		return todayTarget.Add(24 * time.Hour)
 	}
 	return todayTarget
+}
+
+// nextFetchTimeAfter returns the next configured fetch time strictly after `after`.
+// Falls back to 1 hour from now if no fetch times are configured.
+func nextFetchTimeAfter(after time.Time, fetchTimes []string) time.Time {
+	loc := after.Location()
+	best := after.Add(time.Hour) // fallback: 1 h from now
+
+	for _, ft := range fetchTimes {
+		t, err := time.ParseInLocation("15:04", ft, loc)
+		if err != nil {
+			continue
+		}
+		// Try today, then tomorrow
+		for _, candidate := range []time.Time{
+			time.Date(after.Year(), after.Month(), after.Day(), t.Hour(), t.Minute(), 0, 0, loc),
+			time.Date(after.Year(), after.Month(), after.Day()+1, t.Hour(), t.Minute(), 0, 0, loc),
+		} {
+			if candidate.After(after) {
+				if candidate.Before(best) {
+					best = candidate
+				}
+				break
+			}
+		}
+	}
+	return best
 }
