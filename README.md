@@ -10,7 +10,7 @@ git remote add origin git@github.com:RainerSegebrecht/battery-scheduler.git
 git push -u origin main
 ```
 
-Externe Steuerungssoftware für Hausbatteriespeicher in Kombination mit [evcc](https://evcc.io/), Tibber-Stromtarif und Solcast-Solarprognose.
+Externe Steuerungssoftware für Hausbatteriespeicher in Kombination mit [evcc](https://evcc.io/), stundengenauem Stromtarif (bezogen direkt aus evcc) und Solcast-Solarprognose.
 
 ## Hintergrund
 
@@ -30,7 +30,7 @@ evcc steuert das Laden von E-Fahrzeugen intelligent anhand von Solarüberschuss 
 2. **Aktuellen Batterie-SoC** aus evcc lesen: Wie viel Energie fehlt noch bis zum Ziel-SoC?
 3. **Entscheidung**:
    - Solcast-Prognose ≥ `solar_threshold_kwh` → kein Netzladen nötig, Solar füllt die Batterie
-   - Sonst: benötigte kWh berechnen → günstigste N Tibber-Stunden vor `target_time` auswählen
+   - Sonst: benötigte kWh berechnen → günstigste N Stunden vor `target_time` auswählen (Preise kommen aus evcc `/api/tariff/grid`)
 4. **Ladeslots** in SQLite speichern
 
 ### Steuerungsschleife (alle 45 Sekunden)
@@ -40,7 +40,7 @@ Jede Minute prüft der Controller den aktuellen Zustand und sendet einen der dre
 | Bedingung | evcc `batterymode` | Wirkung |
 |---|---|---|
 | Aktuell in einem geplanten Ladeslot **und** SoC < Ziel | `charge` | Batterie wird aus dem Netz geladen |
-| Tibber-Preis > `hold_above_price` | `hold` | Batterie wird weder ge- noch entladen — Energie für teuren Abend aufheben |
+| Strompreis > `hold_above_price` | `hold` | Batterie wird weder ge- noch entladen — Energie für teuren Abend aufheben |
 | Sonst | `normal` | evcc übernimmt die Kontrolle (Standard-Verhalten) |
 
 > **Wichtig:** evcc setzt `batterymode` automatisch nach 60 Sekunden zurück. Deshalb sendet der Scheduler den Befehl alle 45 Sekunden erneut.
@@ -75,7 +75,7 @@ Alle Entscheidungen werden berechnet und in der Datenbank protokolliert (`[dry-r
 
 Sobald der Container läuft, ist das Web-Dashboard unter `http://<host>:8080/` erreichbar. Es aktualisiert sich automatisch alle 30 Sekunden und zeigt:
 
-- **Live-Zustand:** Batterie-SoC, Modus, PV-Leistung, Netzbezug, Tibber-Preis
+- **Live-Zustand:** Batterie-SoC, Modus, PV-Leistung, Netzbezug, aktueller Strompreis
 - **Geplante Ladeslots** der nächsten 48 h (aktiver Slot wird hervorgehoben)
 - **Alle Ladeslots** (letzte 20 Einträge)
 - **Letzte Steuerungsentscheidungen** mit Begründung (Dry-run-Einträge markiert)
@@ -97,7 +97,7 @@ Einmaliger Read-only-Aufruf: Zeigt den aktuellen Systemzustand, die nächsten ge
 - Docker + Docker Compose
 - evcc läuft im selben Docker-Netzwerk (oder ist per URL erreichbar)
 - Der Huawei-Wechselrichter unterstützt in evcc das aktive Battery-Control (`batterymode hold/charge`)
-- Tibber-API-Token (kostenlos unter [developer.tibber.com](https://developer.tibber.com/))
+- evcc ist mit einem dynamischen Stromtarif (z.B. Tibber, aWATTar, Octopus Energy) konfiguriert, damit `/api/tariff/grid` stündliche Preisdaten liefert
 - Solcast-Account mit Rooftop-Site (kostenloser Hobbyisten-Tarif reicht, 10 Abrufe/Tag)
 
 ---
@@ -142,9 +142,6 @@ evcc:
   url: "http://evcc:7070"     # URL des evcc-Containers (Servicename im Docker-Netzwerk)
   poll_interval: "45s"        # Muss < 60s sein (evcc-Auto-Reset)
 
-tibber:
-  token: "DEIN_TIBBER_TOKEN"  # https://developer.tibber.com/
-
 solcast:
   site_id: "DEINE_SITE_ID"    # Im Solcast-Portal unter "Your Sites"
   api_key: "DEIN_API_KEY"
@@ -175,14 +172,14 @@ Der Schwellwert für die tägliche PV-Prognose. Liegt die Solcast-P10-Vorhersage
 Empfehlung: Im Winter niedrig ansetzen (z.B. 2–3 kWh), im Sommer höher (8–10 kWh). Ein fester Wert von 8 kWh ist ein guter Kompromiss.
 
 **`hold_above_price`**
-Liegt der aktuelle Tibber-Preis über diesem Wert, wird die Batterie im `hold`-Modus gehalten — sie wird weder ge- noch entladen. Das bewahrt die gespeicherte Energie für teure Abendstunden (z.B. Sauna-Betrieb).
-Empfehlung: Entspricht ungefähr dem persönlichen Durchschnittspreis. Bei Tibber in Deutschland typischerweise 0,20–0,30 EUR/kWh.
+Liegt der aktuelle Strompreis (aus evcc) über diesem Wert, wird die Batterie im `hold`-Modus gehalten — sie wird weder ge- noch entladen. Das bewahrt die gespeicherte Energie für teure Abendstunden (z.B. Sauna-Betrieb).
+Empfehlung: Entspricht ungefähr dem persönlichen Durchschnittspreis. Bei dynamischen Tarifen in Deutschland typischerweise 0,20–0,30 EUR/kWh.
 
 **`target_time`**
-Der Zeitpunkt, bis zu dem die Batterie auf `target_soc` geladen sein soll. Der Scheduler wählt nur Tibber-Slots aus, die **vor** diesem Zeitpunkt enden.
+Der Zeitpunkt, bis zu dem die Batterie auf `target_soc` geladen sein soll. Der Scheduler wählt nur Stunden-Slots aus, die **vor** diesem Zeitpunkt enden.
 
 **`fetch_times`**
-Uhrzeiten, zu denen Solcast und Tibber abgerufen und der Plan neu berechnet wird. Tibber liefert Preise für den nächsten Tag üblicherweise gegen 13:00 Uhr — der zweite Abruf um 14:00 stellt sicher, dass der Plan die aktuellsten Preise nutzt.
+Uhrzeiten, zu denen Solcast abgerufen und der Plan neu berechnet wird. Dynamische Tarife liefern Preise für den nächsten Tag üblicherweise gegen 13:00 Uhr — der zweite Abruf um 14:00 stellt sicher, dass der Plan die aktuellsten Preise aus evcc nutzt.
 
 ---
 
@@ -207,7 +204,7 @@ Die SQLite-Datenbank (`/data/battery-scheduler.db`) enthält drei Tabellen:
 | Tabelle | Inhalt |
 |---|---|
 | `charging_slots` | Geplante Ladezeitfenster mit Preis und Status |
-| `forecasts` | Protokoll aller Solcast- und Tibber-Abrufe |
+| `forecasts` | Protokoll aller Solcast-Abrufe |
 | `state_log` | Jede Steuerungsentscheidung mit Begründung, SoC und Preis |
 
 Die Datenbank lässt sich mit jedem SQLite-Client (z.B. [DB Browser for SQLite](https://sqlitebrowser.org/)) inspizieren.
@@ -217,10 +214,9 @@ Die Datenbank lässt sich mit jedem SQLite-Client (z.B. [DB Browser for SQLite](
 ## Architektur
 
 ```
-Tibber GraphQL API ──┐
-Solcast REST API   ──┼──► battery-scheduler ──► evcc REST API ──► Huawei sun2000
-SQLite (Volume)    ──┘         │
-                               └──► Logs (stdout)
+Solcast REST API   ──┬──► battery-scheduler ──► evcc REST API ──► Huawei sun2000
+evcc Tariff API    ──┘         │
+SQLite (Volume)                └──► Logs (stdout)
 ```
 
 ```
@@ -231,8 +227,7 @@ battery-scheduler/
 ├── internal/
 │   ├── config/config.go                 # YAML-Laden und Validierung
 │   ├── db/db.go                         # SQLite: Slots, Forecasts, State-Log
-│   ├── evcc/client.go                   # evcc REST: State lesen, BatteryMode setzen
-│   ├── tibber/client.go                 # Tibber GraphQL: Stundenpreise heute+morgen
+│   ├── evcc/client.go                   # evcc REST: State lesen, BatteryMode setzen, Stundenpreise abrufen
 │   ├── solcast/client.go                # Solcast REST: PV-Prognose (48h, P10/P50/P90)
 │   ├── scheduler/scheduler.go          # Plan() und Control() Kernlogik
 │   └── testutil/mocks.go               # Mock-HTTP-Server für Tests
@@ -250,13 +245,13 @@ battery-scheduler/
 
 ### Teststrategie
 
-Die Integrationstests in `integration/integration_test.go` starten für jeden Test drei echte HTTP-Server (`net/http/httptest`) als Ersatz für evcc, Tibber und Solcast. Die **produktive Scheduler-Logik läuft unverändert** — nur die API-URLs werden auf die Mock-Server umgebogen.
+Die Integrationstests in `integration/integration_test.go` starten für jeden Test zwei echte HTTP-Server (`net/http/httptest`) als Ersatz für evcc und Solcast. Die **produktive Scheduler-Logik läuft unverändert** — nur die API-URLs werden auf die Mock-Server umgebogen.
 
 Dadurch lässt sich das gesamte System im Debugger Schritt für Schritt verfolgen, ohne dass reale API-Tokens oder eine laufende evcc-Instanz nötig sind.
 
 ### Mock-Szenarien
 
-**Tibber-Preismuster (`PriceScenario`):**
+**Preismuster (`PriceScenario`) — serviert über den evcc-Tariff-Mock:**
 
 | Szenario | Beschreibung |
 |---|---|
@@ -337,7 +332,7 @@ Die offizielle [Go-Extension für VS Code](https://marketplace.visualstudio.com/
 |---|---|---|
 | `internal/scheduler/scheduler.go` | `func (s *Scheduler) Plan()` | Beginn der Planung |
 | `internal/scheduler/scheduler.go` | `needsGridCharge := ...` | Entscheidung: Netzladen ja/nein? |
-| `internal/scheduler/scheduler.go` | `func (s *Scheduler) selectCheapestSlots` | Slot-Auswahl aus Tibber-Preisen |
+| `internal/scheduler/scheduler.go` | `func (s *Scheduler) selectCheapestSlots` | Slot-Auswahl aus den Stundenpreisen |
 | `internal/scheduler/scheduler.go` | `func (s *Scheduler) decideAction` | Entscheidung pro Control-Tick |
 | `internal/testutil/mocks.go` | `func (m *MockEvcc) handleBatteryMode` | Hier kommt der Befehl von evcc an |
 
